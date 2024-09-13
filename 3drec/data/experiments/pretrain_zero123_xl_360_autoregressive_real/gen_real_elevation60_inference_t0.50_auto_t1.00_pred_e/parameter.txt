@@ -1,0 +1,2 @@
+inference_temp: 0.5
+auto_temp: 1.0
