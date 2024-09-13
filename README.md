@@ -35,11 +35,9 @@ If you want to try it on your own images, you may need to pre-process them, incl
 cd ./3drec/data/
 python process_real_images.py
 ```
-If you find any other interesting images that can be shown here, please send it to me and I'm very happy to make our project more attractive! :wink:
-
 
 ### 3D Reconstruction (NeuS)
-Note that we haven't use the distillation way to get the 3D model, no matter [SDS](https://github.com/ashawkey/stable-dreamfusion) or [SJC](https://github.com/pals-ttic/sjc). We directly train [NeuS](https://github.com/Totoro97/NeuS) as our model can generate consistent multi-view images. Feel free to explore and play around!
+Note that we haven't use the distillation way to get the 3D model, no matter [SDS](https://github.com/ashawkey/stable-dreamfusion) or [SJC](https://github.com/pals-ttic/sjc). We directly train [NeuS](https://github.com/Totoro97/NeuS) as our model can generate consistent multi-view images. 
 ```
 cd 3drec
 pip install -r requirements.txt
@@ -47,7 +45,7 @@ cd ../syncdreamer_3drec
 
 python my_train_renderer_spin36.py -i /dtu/blackhole/11/180913/test/ViewFusion/syncdreamer_3drec/pretrain_zero123_xl_360_autoregressive_real/chair_5_rgba -n chair_5 -e 70 -d 1.5 -l test_imgnew
 ```
-- You can see results under: `syncdreamer_3drec/{output_dir}/{model_name}`.  If you are trying on real images and have no idea about the `evaluation` and `distance`, maybe you can set them as default `60/180*pi` and `1.5`, respectively.
+- You can see results under: `syncdreamer_3drec/{output_dir}/{model_name}`.  If you are trying on real images and have no idea about the `evaluation` and `distance`, maybe you can set them as default `70` and `1.5`, respectively.
 
 
 
