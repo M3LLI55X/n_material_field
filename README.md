@@ -1,4 +1,5 @@
-# Modify from ViewFusion
+# Modify from [ViewFusion](https://github.com/Wi-sc/ViewFusion/tree/main)
+
 ###  Novel View Synthesis
 same environment with [Zero-1-to-3](https://github.com/cvlab-columbia/zero123).
 ```
