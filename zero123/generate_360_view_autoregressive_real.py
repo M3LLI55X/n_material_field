@@ -97,7 +97,7 @@ def sample_model(input_im, model, sampler, precision, ddim_steps, scale, ddim_et
 
 
 class RealDataset(Dataset):
-    def __init__(self, data_dir='/home/ubuntu/workspace/zero123/3drec/data/real_images_zero123/'):
+    def __init__(self, data_dir='/dtu/blackhole/11/180913/test/ViewFusion/3drec/data/real_images_zero123'):
         self.meta = []
         for model_name in os.listdir(data_dir):
             meta_dict = {
@@ -233,8 +233,8 @@ if __name__ == '__main__':
     # args = parser.parse_args()
 
     device_idx=_GPU_INDEX
-    ckpt='./zero123/zero123-xl.ckpt'
-    config='./zero123/configs/sd-swap_att-c_concat-256.yaml'
+    ckpt='/dtu/blackhole/11/180913/test/ViewFusion/zero123/105000.ckpt'
+    config='/dtu/blackhole/11/180913/test/ViewFusion/zero123/configs/sd-swap_att-c_concat-256.yaml'
 
     # print('sys.argv:', sys.argv)
     # if len(sys.argv) > 1:

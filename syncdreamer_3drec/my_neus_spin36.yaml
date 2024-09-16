@@ -2,7 +2,7 @@ model:
   base_lr: 5.0e-4
   target: renderer.my_renderer_spin36.RendererTrainer
   params:
-    total_steps: 2000
+    total_steps: 2500
     warm_up_steps: 100
     train_batch_num: 3584
     train_batch_fg_num: 512
