@@ -42,7 +42,7 @@ def render_images(model, output, elevation, distance=1.5):
     K = np.diag([w/default_size,h/default_size,1.0]) @ K
     # 调整相机内参矩阵以适应不同分辨率的图像。在这个特定的例子中，因为 w、h 和 default_size 相等，所以实际上这个对角矩阵是一个单位矩阵，对 K 没有实际的缩放效果。如果 w 和 h 与 default_size 不同，这个操作将相应地调整内参矩阵的缩放部分。
     imgs = []
-    # 共渲染180帧图像
+    
     for ni in tqdm(range(n)):
         # R = euler2mat(azimuths[ni], elevations[ni], 0, 'szyx')
         # R = np.asarray([[0,-1,0],[0,0,-1],[1,0,0]]) @ R
