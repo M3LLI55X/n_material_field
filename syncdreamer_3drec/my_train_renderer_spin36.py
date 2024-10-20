@@ -115,9 +115,21 @@ def extract_geometry(bound_min, bound_max, resolution, threshold, query_func, co
     b_min_np = bound_min.detach().cpu().numpy()
 
     vertices = vertices / (resolution - 1.0) * (b_max_np - b_min_np)[None, :] + b_min_np[None, :]
-    vertex_colors = color_func(vertices)
+    vertex_colors,vertex_seg = color_func(vertices)
+    vertex_seg_results = np.argmax(vertex_seg, axis=-1) # [n,]
+
     # 将顶点坐标从体数据的网格索引空间转换到实际的三维空间坐标。
-    return vertices, triangles, vertex_colors
+    geometries = []
+    for n_class in np.unique(vertex_seg_results):
+        mask = vertex_seg_results == n_class
+        vertices_cp = vertices.copy()
+        vertex_colors_cp = vertex_colors.copy()
+        vertices_cp[~mask] = 0
+        vertex_colors_cp[~mask] = 0
+        geometries.append((vertices_cp, triangles, vertex_colors_cp, n_class))
+    return geometries
+
+    # return vertices_cp, triangles, vertex_colors_cp,vertex_seg_results
 
 def extract_mesh(model, output, resolution=512):
     if not isinstance(model.renderer, NeuSRenderer): return
@@ -126,11 +138,16 @@ def extract_mesh(model, output, resolution=512):
     with torch.no_grad():
         sdf_field = extract_fields(bbox_min, bbox_max, resolution, lambda x: model.renderer.sdf_network.sdf(x))
         np.save(f'{output}/sdf_field.npy', sdf_field)  # 保存 SDF 场
-        vertices, triangles, vertex_colors = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
+        # vertices_cp, triangles, vertex_colors_cp, vertex_seg_results = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
+        geometries = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
 
+    breakpoint()
     # output geometry
-    mesh = trimesh.Trimesh(vertices, triangles, vertex_colors=vertex_colors)
-    mesh.export(str(f'{output}/mesh.ply'))
+    for vertices_cp, triangles, vertex_colors_cp, n_class in geometries:
+        mesh = trimesh.Trimesh(vertices_cp, triangles, vertex_colors=vertex_colors_cp)
+        mesh.export(str(f'{output}/{n_class}_mesh.ply'))
+    # mesh = trimesh.Trimesh(vertices_cp, triangles, vertex_colors_cp)
+    # mesh.export(str(f'{output}/{n_class}_mesh.ply'))
 
 def main():
     parser = argparse.ArgumentParser()

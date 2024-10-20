@@ -466,8 +466,7 @@ class RenderingNetwork(nn.Module):
 
             setattr(self, "lin" + str(l), lin)
 
-        self.seg_lin = nn.Linear(dims[l], 128)
-
+        self.seg_lin = nn.Linear(dims[l], 12)
         self.relu = nn.ReLU()
 
     def forward(self, points, normals, view_dirs, feature_vectors):
@@ -492,6 +491,7 @@ class RenderingNetwork(nn.Module):
 
         color_x = getattr(self, "lin" + str(self.num_layers - 2))(x)
         seg_x = self.seg_lin(x)
+        seg_x = F.sigmoid(seg_x)
         
 
         if self.squeeze_out:

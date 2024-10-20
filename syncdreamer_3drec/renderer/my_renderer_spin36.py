@@ -21,9 +21,9 @@ from util import instantiate_from_config
 
 DEFAULT_RADIUS = np.sqrt(3)/2
 DEFAULT_SIDE_LENGTH = 0.6
-# 这个函数从由输入权重定义的概率密度函数（PDF）中采样点。
+# 函数从由输入权重定义的概率密度函数（PDF）中采样点。
 # 它使用逆变换采样从PDF的累积分布函数（CDF）生成样本。
-# 该函数可以根据`det`参数生成确定性或随机样本。
+# 根据`det`参数生成确定性或随机样本。
 def sample_pdf(bins, weights, n_samples, det=True):
     device = bins.device
     dtype = bins.dtype
@@ -155,18 +155,23 @@ class NeuSRenderer(BaseRenderer):
         V = vertices.shape[0]
         bn = 20480
         verts_colors = []
+        material_seg = []
         with torch.no_grad():
             for vi in range(0, V, bn):
                 verts = torch.from_numpy(vertices[vi:vi+bn].astype(np.float32)).cuda()
                 feats = self.sdf_network(verts)[..., 1:]
                 gradients = self.sdf_network.gradient(verts)  # ...,3
                 gradients = F.normalize(gradients, dim=-1)
-                colors = self.color_network(verts, gradients, gradients, feats)
+                colors_and_seg = self.color_network(verts, gradients, gradients, feats)
+                colors = colors_and_seg['rgb']
                 colors = torch.clamp(colors,min=0,max=1).cpu().numpy()
                 verts_colors.append(colors)
+                material=colors_and_seg['seg']
+                material_seg.append(material.cpu().numpy())
 
         verts_colors = (np.concatenate(verts_colors, 0)*255).astype(np.uint8)
-        return verts_colors
+        material_seg = np.concatenate(material_seg, 0)
+        return verts_colors, material_seg
 
     # 给定固定的 inv_s 的情况下进行上采样
     def upsample(self, rays_o, rays_d, z_vals, sdf, n_importance, inv_s):
@@ -307,20 +312,28 @@ class NeuSRenderer(BaseRenderer):
         dirs = rays_d.unsqueeze(-2).expand(batch_size, n_samples, 3)
         dirs = F.normalize(dirs, dim=-1)
         device = rays_o.device
-        # breakpoint()
         has_seg = True
+
+        num_classes = 12 #改过
 
         alpha, sampled_color, gradient_error, normal = torch.zeros(batch_size, n_samples, dtype=self.default_dtype, device=device), \
             torch.zeros(batch_size, n_samples, 3, dtype=self.default_dtype, device=device), \
             torch.zeros([batch_size, n_samples], dtype=self.default_dtype, device=device), \
             torch.zeros([batch_size, n_samples, 3], dtype=self.default_dtype, device=device)
+        sample_seg= torch.zeros([batch_size, n_samples, num_classes], dtype=self.default_dtype, device=device)
+        weights = torch.zeros(batch_size, n_samples, dtype=self.default_dtype, device=device)
+        # weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], dtype=self.default_dtype, device=device), 1. - alpha + 1e-7], -1), -1)[..., :-1]
+
         if torch.sum(inner_mask) > 0:
             cos_anneal_ratio = self.get_anneal_val(step) if is_train else 1.0
             alpha[inner_mask], gradients, feature_vector, inv_s, sdf = self.compute_sdf_alpha(points[inner_mask], dists[inner_mask], dirs[inner_mask], cos_anneal_ratio, step)
             if has_seg:
                 out_dict = self.color_network(points[inner_mask], gradients, -dirs[inner_mask], feature_vector)
                 sampled_color[inner_mask] = out_dict['rgb']
-                seg = out_dict['seg']
+                sample_seg[inner_mask] = out_dict['seg']
+                weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], dtype=self.default_dtype, device=device), 1. - alpha + 1e-7], -1), -1)[..., :-1]
+                seg = (sample_seg * weights[..., None]).sum(dim=1)
+                # seg = out_dict['seg']
             else:
                 sampled_color[inner_mask] = self.color_network(points[inner_mask], gradients, -dirs[inner_mask], feature_vector)
             # Eikonal loss
@@ -344,21 +357,36 @@ class NeuSRenderer(BaseRenderer):
 
     # 渲染损失计算逻辑
     def render_with_loss(self, ray_batch, is_train, step):
-        # breakpoint()
         render_outputs = self.render(ray_batch, is_train, step)
 
         has_seg = True
+        rgb_gt = ray_batch['rgb']
+        rgb_pr = render_outputs['rgb']
         if has_seg:
             rgb_seg_gt = ray_batch['rgb']
-            rgb_seg_pred = render_outputs['rgb']
+            # rgb_seg_pred = render_outputs['rgb']
             rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, 3:]
             seg_pr = render_outputs['seg']
 
-        rgb_gt = ray_batch['rgb']
-        rgb_pr = render_outputs['rgb']
+            # seg_gt = seg_gt.long()
+            # if seg_gt.dim() == 2 and seg_gt.size(1) == 1:
+                # seg_gt = seg_gt.view(-1)
 
-        if has_seg:
-            seg_loss = F.cross_entropy(seg_pr, seg_gt, reduction='none')
+            # 将 seg_gt 转换为 one-hot 编码
+            # num_classes = 12
+            # labels = torch.clamp(torch.floor(seg_gt * 12), max=11).int().squeeze()
+            # one_hot = torch.nn.functional.one_hot(labels, num_classes=12)
+            # seg_gt_one_hot = one_hot
+            bins = torch.linspace(0, 1, steps=13, device='cuda:0')  # 生成 12 个区间边界
+            indices = torch.bucketize(seg_gt.squeeze(), bins) - 1  # 找到每个值所属的区间
+
+            # 创建一个全零张量，形状为 [4096, 12]
+            one_hot_values = torch.zeros((seg_gt.size(0), 12), device='cuda:0')
+
+            # 将原始值填充到对应的区间位置
+            one_hot_values[torch.arange(seg_gt.size(0)), indices] = seg_gt.squeeze()
+
+            seg_loss = F.cross_entropy(seg_pr, one_hot_values, reduction='none')
             seg_loss = torch.mean(seg_loss)
         
         if self.rgb_loss == 'soft_l1':
@@ -380,61 +408,6 @@ class NeuSRenderer(BaseRenderer):
         if self.lambda_mask_loss>0 and self.use_mask:
             mask_loss = F.mse_loss(render_outputs['mask'], ray_batch['mask'], reduction='none').mean()
             loss += mask_loss * self.lambda_mask_loss
-            loss_batch['mask'] = mask_loss
-        return loss, loss_batch
-
-
-class NeRFRenderer(BaseRenderer):
-    def __init__(self, train_batch_num, test_batch_num, bound=0.5, use_mask=False, lambda_rgb_loss=1.0, lambda_mask_loss=0.0):
-        super().__init__(train_batch_num, test_batch_num)
-        self.train_batch_num = train_batch_num
-        self.test_batch_num = test_batch_num
-        self.use_mask = use_mask
-        self.field = NGPNetwork(bound=bound)
-
-        self.update_interval = 16
-        self.fp16 = True
-        self.lambda_rgb_loss = lambda_rgb_loss
-        self.lambda_mask_loss = lambda_mask_loss
-
-    # 实现了渲染逻辑
-    def render_impl(self, ray_batch, is_train, step):
-        rays_o, rays_d = ray_batch['rays_o'], ray_batch['rays_d']
-        with torch.cuda.amp.autocast(enabled=self.fp16):
-            if step % self.update_interval == 0:
-                self.field.update_extra_state()
-
-            outputs = self.field.render(rays_o, rays_d,)
-
-        renderings = {
-            'rgb': outputs['image'],
-            'depth': outputs['depth'],
-            'mask': outputs['weights_sum'].unsqueeze(-1),
-        }
-        return renderings
-
-    # 渲染损失计算逻辑
-    def render_with_loss(self, ray_batch, is_train, step):
-        render_outputs = self.render(ray_batch, is_train, step)
-        rgb_gt = ray_batch['rgb']
-        rgb_pr = render_outputs['rgb']
-        if rgb_gt.shape[1] == 4:
-            seg = rgb_gt[:, 3:]
-            seg_gt = rgb_gt[:, 3:]
-            rgb_pr = rgb_pr[:, :3]
-            rgb_gt = rgb_gt[:, :3]
-        
-        epsilon = 0.001
-        rgb_loss = torch.sqrt(torch.sum((rgb_gt - rgb_pr) ** 2, dim=-1) + epsilon)
-        rgb_loss = torch.mean(rgb_loss)
-        seg_loss = torch.nn.functional.binary_cross_entropy_with_logits(seg, seg_gt, reduction='none')
-        loss = rgb_loss * self.lambda_rgb_loss
-        loss_batch = {'rendering': rgb_loss}
-
-        if self.use_mask:
-            mask_loss = F.mse_loss(render_outputs['mask'], ray_batch['mask'], reduction='none')
-            mask_loss = torch.mean(mask_loss)
-            loss = loss + mask_loss * self.lambda_mask_loss
             loss_batch['mask'] = mask_loss
         return loss, loss_batch
 
@@ -474,8 +447,6 @@ class RendererTrainer(pl.LightningModule):
                                          lambda_eikonal_loss=lambda_eikonal_loss,
                                          lambda_mask_loss=lambda_mask_loss,
                                          coarse_sn=coarse_sn, fine_sn=fine_sn)
-        elif renderer=='ngp':
-            self.renderer = NeRFRenderer(train_batch_num, test_batch_num, bound=cube_bound, use_mask=use_mask, lambda_mask_loss=lambda_mask_loss, lambda_rgb_loss=lambda_rgb_loss,)
         else:
             raise NotImplementedError
         self.validation_index = 0
@@ -526,11 +497,12 @@ class RendererTrainer(pl.LightningModule):
         self.images_info = {'images': [] ,'masks': [], 'Ks': [], 'poses':[]}
         print(self.image_path, self.log_dir)
         # img = imread(self.image_path)
-        seg_maskdir = '/dtu/blackhole/11/180913/seg_material/experiments'
+        seg_maskdir = '/dtu/blackhole/11/180913/seg_material/merged_results'
         for index in range(self.num_images):
             # rgb = np.copy(img[:,index*self.image_size:(index+1)*self.image_size,:])
             rgb = imread(f'{self.image_path}/{index}.png')
-            mask_seg = imread(os.path.join(seg_maskdir,'chair%i'%(index+1),'clean_masks/0','1_mask.png'))
+            # mask_seg = imread(os.path.join(seg_maskdir,'chair%i'%(index+1),'clean_masks/0','1_mask.png'))
+            mask_seg = imread(os.path.join(seg_maskdir, 'chair%i' % (index + 1) + '.png'))
             mask_seg = resize(mask_seg, (256,256))
             # predict mask
             if self.use_mask:
@@ -656,6 +628,8 @@ class RendererTrainer(pl.LightningModule):
             final_lr = 0.02
             interval = 1000
             times = total_step // interval
+            total_step = 100
+            times = 1
             ratio = np.power(final_lr, 1/times)
             if step<warm_up_step:
                 learning_rate = (step / warm_up_step) * (warm_up_end - warm_up_init) + warm_up_init
