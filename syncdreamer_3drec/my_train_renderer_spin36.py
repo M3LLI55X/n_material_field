@@ -88,66 +88,103 @@ def extract_fields(bound_min, bound_max, resolution, query_func, batch_size=64, 
     X = torch.linspace(bound_min[0], bound_max[0], resolution).split(N)
     Y = torch.linspace(bound_min[1], bound_max[1], resolution).split(N)
     Z = torch.linspace(bound_min[2], bound_max[2], resolution).split(N)
+    
+    u_all = []
+    seg_nums = 12
+    seg_num = 2
+    for seg_num in range(seg_nums):
+        u = np.zeros([resolution, resolution, resolution], dtype=np.float32)
+        with torch.no_grad():
+            for xi, xs in enumerate(X):
+                for yi, ys in enumerate(Y):
+                    for zi, zs in enumerate(Z):
+                        xx, yy, zz = torch.meshgrid(xs, ys, zs)
+                        pts = torch.cat([xx.reshape(-1, 1), yy.reshape(-1, 1), zz.reshape(-1, 1)], dim=-1).cuda()
+                        val = query_func(pts).detach()
+                        vertex_colors, vertex_seg = color_func(pts.cpu().numpy())
+                        vertex_seg_results = np.argmax(vertex_seg, axis=-1)
+                        mask = vertex_seg_results == seg_num
+                        val[mask] = 0
+                        outside_mask = torch.norm(pts,dim=-1)>=1.0
+                        val[outside_mask]=outside_val
+                        val = val.reshape(len(xs), len(ys), len(zs)).cpu().numpy()
+                        u[xi * N: xi * N + len(xs), yi * N: yi * N + len(ys), zi * N: zi * N + len(zs)] = val
+        u_all.append(u)
+    breakpoint()
+    return u_all
 
-    u = np.zeros([resolution, resolution, resolution], dtype=np.float32)
-    with torch.no_grad():
-        for xi, xs in enumerate(X):
-            for yi, ys in enumerate(Y):
-                for zi, zs in enumerate(Z):
-                    xx, yy, zz = torch.meshgrid(xs, ys, zs)
-                    # 使用 torch.meshgrid 生成三维网格的坐标点
-                    pts = torch.cat([xx.reshape(-1, 1), yy.reshape(-1, 1), zz.reshape(-1, 1)], dim=-1).cuda()
-                    # 将网格坐标重塑并拼接成一个点集 pts，每个点是一个三维坐标，然后将数据移动到 GPU 上进行处理。
-                    val = query_func(pts).detach()
-                    # 调用 query_func 函数计算每个点的场值。
-                    outside_mask = torch.norm(pts,dim=-1)>=1.0
-                    # 处理边界外的点
-                    val[outside_mask]=outside_val
-                    val = val.reshape(len(xs), len(ys), len(zs)).cpu().numpy()
-                    u[xi * N: xi * N + len(xs), yi * N: yi * N + len(ys), zi * N: zi * N + len(zs)] = val
-                    # 将 val 重塑回三维数组的形状
-    return u
 
 def extract_geometry(bound_min, bound_max, resolution, threshold, query_func, color_func, outside_val=1.0):
-    u = extract_fields(bound_min, bound_max, resolution, query_func, outside_val=outside_val)
-    vertices, triangles = mcubes.marching_cubes(u, threshold)
+    u_all = extract_fields(bound_min, bound_max, resolution, query_func, outside_val=outside_val,color_func=color_func)
+    # geometries = []
+    # n = len(u_all)
+    
+    # for u in u_all:
+
+    vertices, triangles = mcubes.marching_cubes(u_all[0], threshold)
     b_max_np = bound_max.detach().cpu().numpy()
     b_min_np = bound_min.detach().cpu().numpy()
 
     vertices = vertices / (resolution - 1.0) * (b_max_np - b_min_np)[None, :] + b_min_np[None, :]
-    vertex_colors,vertex_seg = color_func(vertices)
-    vertex_seg_results = np.argmax(vertex_seg, axis=-1) # [n,]
-
-    # 将顶点坐标从体数据的网格索引空间转换到实际的三维空间坐标。
-    geometries = []
-    for n_class in np.unique(vertex_seg_results):
-        mask = vertex_seg_results == n_class
-        vertices_cp = vertices.copy()
-        vertex_colors_cp = vertex_colors.copy()
-        vertices_cp[~mask] = 0
-        vertex_colors_cp[~mask] = 0
-        geometries.append((vertices_cp, triangles, vertex_colors_cp, n_class))
-    return geometries
-
-    # return vertices_cp, triangles, vertex_colors_cp,vertex_seg_results
+    vertex_colors, vertex_seg = color_func(vertices)
+    # vertex_seg_results = np.argmax(vertex_seg, axis=-1)  # [n,]
+    # n_class = np.unique(vertex_seg_results)
+    # mask = vertex_seg_results == n_class
+    # vertices_cp = vertices.copy()
+    # vertex_colors_cp = vertex_colors.copy()
+    # vertices_cp[~mask] = 0
+    # vertex_colors_cp[~mask] = 0
+    # geometries.append((vertices, triangles, vertex_colors))
+    return vertices, triangles, vertex_colors
 
 def extract_mesh(model, output, resolution=512):
     if not isinstance(model.renderer, NeuSRenderer): return
-    bbox_min = -torch.ones(3)*DEFAULT_SIDE_LENGTH
-    bbox_max = torch.ones(3)*DEFAULT_SIDE_LENGTH
+    bbox_min = -torch.ones(3) * DEFAULT_SIDE_LENGTH
+    bbox_max = torch.ones(3) * DEFAULT_SIDE_LENGTH
     with torch.no_grad():
-        sdf_field = extract_fields(bbox_min, bbox_max, resolution, lambda x: model.renderer.sdf_network.sdf(x))
-        np.save(f'{output}/sdf_field.npy', sdf_field)  # 保存 SDF 场
-        # vertices_cp, triangles, vertex_colors_cp, vertex_seg_results = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
-        geometries = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
+        vertices, triangles, vertex_colors = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
 
-    breakpoint()
-    # output geometry
-    for vertices_cp, triangles, vertex_colors_cp, n_class in geometries:
-        mesh = trimesh.Trimesh(vertices_cp, triangles, vertex_colors=vertex_colors_cp)
-        mesh.export(str(f'{output}/{n_class}_mesh.ply'))
-    # mesh = trimesh.Trimesh(vertices_cp, triangles, vertex_colors_cp)
-    # mesh.export(str(f'{output}/{n_class}_mesh.ply'))
+    # for i, (vertices_cp, triangles_cp, vertex_colors_cp, n_class) in enumerate(geometries):
+    mesh = trimesh.Trimesh(vertices, triangles, vertex_colors)
+    # mesh.export(f'{output}/class_{n_class}_mesh_{i}.ply')
+    mesh.export(f'{output}/class_mesh.ply')
+
+
+# def extract_geometry(bound_min, bound_max, resolution, threshold, query_func, color_func, outside_val=1.0):
+#     u = extract_fields(bound_min, bound_max, resolution, query_func, outside_val=outside_val)
+#     vertices, triangles = mcubes.marching_cubes(u, threshold)
+#     b_max_np = bound_max.detach().cpu().numpy()
+#     b_min_np = bound_min.detach().cpu().numpy()
+
+#     vertices = vertices / (resolution - 1.0) * (b_max_np - b_min_np)[None, :] + b_min_np[None, :]
+#     vertex_colors,vertex_seg = color_func(vertices)
+#     vertex_seg_results = np.argmax(vertex_seg, axis=-1) # [n,]
+
+#     # 将顶点坐标从体数据的网格索引空间转换到实际的三维空间坐标。
+#     geometries = []
+#     for n_class in np.unique(vertex_seg_results):
+#         mask = vertex_seg_results == n_class
+#         vertices_cp = vertices.copy()
+#         vertex_colors_cp = vertex_colors.copy()
+#         vertices_cp[~mask] = 0
+#         vertex_colors_cp[~mask] = 0
+#         geometries.append((vertices_cp, triangles, vertex_colors_cp, n_class))
+#     return geometries
+
+
+# def extract_mesh(model, output, resolution=512):
+#     if not isinstance(model.renderer, NeuSRenderer): return
+#     bbox_min = -torch.ones(3) * DEFAULT_SIDE_LENGTH
+#     bbox_max = torch.ones(3) * DEFAULT_SIDE_LENGTH
+#     with torch.no_grad():
+#         # sdf_field = extract_fields(bbox_min, bbox_max, resolution, lambda x: model.renderer.sdf_network.sdf(x))
+#         geometries = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
+
+#     # output geometry
+#     for vertices_cp, triangles, vertex_colors_cp, n_class in geometries:
+#         mesh = trimesh.Trimesh(vertices_cp, triangles, vertex_colors=vertex_colors_cp)
+#         mesh.export(str(f'{output}/{n_class}_mesh.ply'))
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -219,7 +256,7 @@ def main():
 
     model = model.cuda().eval()
 
-    render_images(model, log_dir, opt.elevation)
+    # render_images(model, log_dir, opt.elevation)
     extract_mesh(model, log_dir)
 
 if __name__=="__main__":
