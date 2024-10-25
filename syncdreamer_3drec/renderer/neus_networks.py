@@ -497,7 +497,7 @@ class RenderingNetwork(nn.Module):
         if self.squeeze_out:
             x = self.rgb_act(x)
         return {'rgb': color_x, 'seg': seg_x}
-        # 改过
+
 
 class SingleVarianceNetwork(nn.Module):
     def __init__(self, init_val, activation='exp'):
