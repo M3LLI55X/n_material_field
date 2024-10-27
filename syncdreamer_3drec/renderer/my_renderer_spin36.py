@@ -168,7 +168,6 @@ class NeuSRenderer(BaseRenderer):
                 verts_colors.append(colors)
                 material=colors_and_seg['seg']
                 material_seg.append(material.cpu().numpy())
-
         verts_colors = (np.concatenate(verts_colors, 0)*255).astype(np.uint8)
         material_seg = np.concatenate(material_seg, 0)
         return verts_colors, material_seg
@@ -312,9 +311,9 @@ class NeuSRenderer(BaseRenderer):
         dirs = rays_d.unsqueeze(-2).expand(batch_size, n_samples, 3)
         dirs = F.normalize(dirs, dim=-1)
         device = rays_o.device
-        
         has_seg = True
-        num_classes = 12 #预设的材质类别数
+
+        num_classes = 12 #material number
 
         alpha, sampled_color, gradient_error, normal = torch.zeros(batch_size, n_samples, dtype=self.default_dtype, device=device), \
             torch.zeros(batch_size, n_samples, 3, dtype=self.default_dtype, device=device), \
@@ -362,25 +361,33 @@ class NeuSRenderer(BaseRenderer):
         has_seg = True
         rgb_gt = ray_batch['rgb']
         rgb_pr = render_outputs['rgb']
+        if has_seg:
+            rgb_seg_gt = ray_batch['rgb']
+            # rgb_seg_pred = render_outputs['rgb']
+            rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, 3:]
+            seg_pr = render_outputs['seg']
+
+            # seg_gt = seg_gt.long()
+            # if seg_gt.dim() == 2 and seg_gt.size(1) == 1:
+                # seg_gt = seg_gt.view(-1)
+
+            # 将 seg_gt 转换为 one-hot 编码
+            # num_classes = 12
+            # labels = torch.clamp(torch.floor(seg_gt * 12), max=11).int().squeeze()
+            # one_hot = torch.nn.functional.one_hot(labels, num_classes=12)
+            # seg_gt_one_hot = one_hot
+            bins = torch.linspace(0, 1, steps=13, device='cuda:0')  # 生成 12 个区间边界
+            indices = torch.bucketize(seg_gt.squeeze(), bins) - 1  # 找到每个值所属的区间
+
+            # 创建一个全零张量，形状为 [4096, 12]
+            one_hot_values = torch.zeros((seg_gt.size(0), 12), device='cuda:0')
+
+            # 将原始值填充到对应的区间位置
+            one_hot_values[torch.arange(seg_gt.size(0)), indices] = seg_gt.squeeze()
+
+            seg_loss = F.cross_entropy(seg_pr, one_hot_values, reduction='none')
+            seg_loss = torch.mean(seg_loss)
         
-        # if has_seg:
-        #     rgb_seg_gt = ray_batch['rgb']
-        #     rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, 3:]
-        #     seg_pr = render_outputs['seg']
-        #     bins = torch.linspace(0, 1, steps=13, device='cuda:0')  # 生成 12 个区间边界
-        #     indices = torch.bucketize(seg_gt.squeeze(), bins) - 1  # 找到每个值所属的区间
-        #     # 创建一个全零张量，形状为 [4096, 12]
-        #     one_hot_values = torch.zeros((seg_gt.size(0), 12), device='cuda:0')
-        #     # 将原始值填充到对应的区间位置
-        #     one_hot_values[torch.arange(seg_gt.size(0)), indices] = seg_gt.squeeze()
-        #     seg_loss = F.cross_entropy(seg_pr, one_hot_values, reduction='none')
-        #     seg_loss = torch.mean(seg_loss)
-
-        if 'seg' in render_outputs:
-            material_gt = ray_batch['material_mask'].long().squeeze()  # ground truth 材质掩码
-            material_pr = render_outputs['seg']  # 预测的材质掩码
-            material_loss = F.cross_entropy(material_pr, material_gt, reduction='none').mean()
-
         if self.rgb_loss == 'soft_l1':
             epsilon = 0.001
             rgb_loss = torch.sqrt(torch.sum((rgb_gt - rgb_pr) ** 2, dim=-1) + epsilon)
@@ -392,17 +399,11 @@ class NeuSRenderer(BaseRenderer):
 
         eikonal_loss = torch.sum(render_outputs['gradient_error'] * render_outputs['inner_mask']) / torch.sum(render_outputs['inner_mask'] + 1e-5)
         loss = rgb_loss * self.lambda_rgb_loss + eikonal_loss * self.lambda_eikonal_loss
-        if 'seg' in render_outputs:
-            loss += material_loss  # 将材质分割损失加到总损失中
-
         loss_batch = {
             'eikonal': eikonal_loss,
             'rendering': rgb_loss,
+            # 'mask': mask_loss,
         }
-
-        if 'seg' in render_outputs:
-            loss_batch['material'] = material_loss
-
         if self.lambda_mask_loss>0 and self.use_mask:
             mask_loss = F.mse_loss(render_outputs['mask'], ray_batch['mask'], reduction='none').mean()
             loss += mask_loss * self.lambda_mask_loss
@@ -471,7 +472,6 @@ class RendererTrainer(pl.LightningModule):
         ray_batch = {
             'rgb': images_info['images'].reshape(image_num*h*w,color_ch),
             'mask': images_info['masks'].reshape(image_num*h*w,1),
-            'material_mask': images_info['material_masks'].reshape(image_num * h * w, 1),  # 添加材质掩码
             'rays_o': rays_o.reshape(image_num*h*w,3).float(),
             'rays_d': rays_d.reshape(image_num*h*w,3).float(),
         }
@@ -493,7 +493,7 @@ class RendererTrainer(pl.LightningModule):
         mask_predictor = BackgroundRemoval()
         self.K, _, _, _, _ = read_pickle(f'meta_info/camera-16.pkl')
 
-        self.images_info = {'images': [] ,'masks': [], 'Ks': [], 'poses':[], 'material_masks': []}
+        self.images_info = {'images': [] ,'masks': [], 'Ks': [], 'poses':[]}
         print(self.image_path, self.log_dir)
         # img = imread(self.image_path)
         seg_maskdir = '/dtu/blackhole/11/180913/seg_material/merged_results'
@@ -532,7 +532,6 @@ class RendererTrainer(pl.LightningModule):
             self.images_info['masks'].append(torch.from_numpy(mask.astype(np.float32))) # h,w
             self.images_info['Ks'].append(torch.from_numpy(K.astype(np.float32)))
             self.images_info['poses'].append(torch.from_numpy(pose.astype(np.float32)))
-            self.images_info['material_masks'].append(torch.from_numpy(mask_seg))
 
         # 数据堆叠
         for k, v in self.images_info.items(): self.images_info[k] = torch.stack(v, 0) # stack all values
