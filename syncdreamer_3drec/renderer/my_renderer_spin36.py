@@ -370,7 +370,6 @@ class NeuSRenderer(BaseRenderer):
             # seg_gt = seg_gt.long()
             # if seg_gt.dim() == 2 and seg_gt.size(1) == 1:
                 # seg_gt = seg_gt.view(-1)
-
             # 将 seg_gt 转换为 one-hot 编码
             # num_classes = 12
             # labels = torch.clamp(torch.floor(seg_gt * 12), max=11).int().squeeze()
@@ -514,7 +513,9 @@ class RendererTrainer(pl.LightningModule):
                 mask = np.zeros([h,w], np.float32)
 
             rgb = rgb.astype(np.float32)/255
-            rgb_seg = np.concatenate([rgb, mask[...,None]], -1)
+            mask_seg = mask_seg.astype(np.float32)/255
+            breakpoint()
+            rgb_seg = np.concatenate([rgb, mask_seg[...,None]], -1)
             K = np.copy(self.K)
 
             e, a = self.elevation, index*np.pi*2/self.num_images

@@ -34,9 +34,9 @@ def extract_fields(bound_min, bound_max, resolution, query_func, batch_size=64, 
     Z = torch.linspace(bound_min[2], bound_max[2], resolution).split(N)
     
     u_all = []
-    seg_nums = 3
+    seg_nums = 6
     seg_index = 2
-    for seg_num in range(seg_nums):
+    for seg_index in range(seg_nums):
         u = np.zeros([resolution, resolution, resolution], dtype=np.float32)
         with torch.no_grad():
             for xi, xs in enumerate(X):
@@ -54,7 +54,6 @@ def extract_fields(bound_min, bound_max, resolution, query_func, batch_size=64, 
                         val = val.reshape(len(xs), len(ys), len(zs)).cpu().numpy()
                         u[xi * N: xi * N + len(xs), yi * N: yi * N + len(ys), zi * N: zi * N + len(zs)] = val
         u_all.append(u)
-    breakpoint()
     return u_all
 
 
