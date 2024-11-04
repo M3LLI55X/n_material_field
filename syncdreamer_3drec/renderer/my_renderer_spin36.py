@@ -313,7 +313,7 @@ class NeuSRenderer(BaseRenderer):
         device = rays_o.device
 
         has_seg = True
-        num_classes = 12 
+        num_classes = 3
 
         alpha, sampled_color, gradient_error, normal = torch.zeros(batch_size, n_samples, dtype=self.default_dtype, device=device), \
             torch.zeros(batch_size, n_samples, 3, dtype=self.default_dtype, device=device), \
@@ -367,23 +367,12 @@ class NeuSRenderer(BaseRenderer):
             rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, 3:]
             seg_pr = render_outputs['seg']
 
-            # seg_gt = seg_gt.long()
-            # if seg_gt.dim() == 2 and seg_gt.size(1) == 1:
-                # seg_gt = seg_gt.view(-1)
-
-            # 将 seg_gt 转换为 one-hot 编码
-            # num_classes = 12
-            # labels = torch.clamp(torch.floor(seg_gt * 12), max=11).int().squeeze()
-            # one_hot = torch.nn.functional.one_hot(labels, num_classes=12)
-            # seg_gt_one_hot = one_hot
-            bins = torch.linspace(0, 1, steps=13, device='cuda:0')  # 生成 12 个区间边界
-            indices = torch.bucketize(seg_gt.squeeze(), bins) - 1  # 找到每个值所属的区间
-
-            # 创建一个全零张量，形状为 [4096, 12]
-            one_hot_values = torch.zeros((seg_gt.size(0), 12), device='cuda:0')
-
-            # 将原始值填充到对应的区间位置
-            one_hot_values[torch.arange(seg_gt.size(0)), indices] = seg_gt.squeeze()
+            # bins = torch.linspace(0, 1, steps=13, device='cuda:0')  # 生成 12 个区间边界
+            # indices = torch.bucketize(seg_gt.squeeze(), bins) - 1  # 找到每个值所属的区间
+            # # 创建一个全零张量，形状为 [4096, 12]
+            # one_hot_values = torch.zeros((seg_gt.size(0), 12), device='cuda:0')
+            # # 将原始值填充到对应的区间位置
+            # one_hot_values[torch.arange(seg_gt.size(0)), indices] = seg_gt.squeeze()
 
             seg_loss = F.cross_entropy(seg_pr, one_hot_values, reduction='none')
             seg_loss = torch.mean(seg_loss)
