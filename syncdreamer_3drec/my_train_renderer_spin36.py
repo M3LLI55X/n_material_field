@@ -90,7 +90,7 @@ def extract_fields(bound_min, bound_max, resolution, query_func, batch_size=64, 
     Z = torch.linspace(bound_min[2], bound_max[2], resolution).split(N)
     
     u_all = []
-    seg_nums = 12
+    seg_nums = 3
     seg_num = 2
     for seg_num in range(seg_nums):
         u = np.zeros([resolution, resolution, resolution], dtype=np.float32)

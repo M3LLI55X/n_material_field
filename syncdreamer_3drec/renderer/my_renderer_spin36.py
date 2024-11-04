@@ -364,17 +364,12 @@ class NeuSRenderer(BaseRenderer):
         if has_seg:
             rgb_seg_gt = ray_batch['rgb']
             # rgb_seg_pred = render_outputs['rgb']
-            rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, 3:]
+            rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, -1:]
             seg_pr = render_outputs['seg']
-
-            # bins = torch.linspace(0, 1, steps=13, device='cuda:0')  # 生成 12 个区间边界
-            # indices = torch.bucketize(seg_gt.squeeze(), bins) - 1  # 找到每个值所属的区间
-            # # 创建一个全零张量，形状为 [4096, 12]
-            # one_hot_values = torch.zeros((seg_gt.size(0), 12), device='cuda:0')
-            # # 将原始值填充到对应的区间位置
-            # one_hot_values[torch.arange(seg_gt.size(0)), indices] = seg_gt.squeeze()
-
-            seg_loss = F.cross_entropy(seg_pr, one_hot_values, reduction='none')
+            seg_gt = seg_gt.long()
+            mask_one_hot = F.one_hot(seg_gt, num_classes=3).float()
+            # breakpoint()
+            seg_loss = F.cross_entropy(seg_pr, mask_one_hot, reduction='none')
             seg_loss = torch.mean(seg_loss)
         
         if self.rgb_loss == 'soft_l1':
@@ -502,7 +497,7 @@ class RendererTrainer(pl.LightningModule):
                 mask = np.zeros([h,w], np.float32)
 
             rgb = rgb.astype(np.float32)/255
-            rgb_seg = np.concatenate([rgb, mask[...,None]], -1)
+            rgb_seg = np.concatenate([rgb, mask_seg[...,None]], -1)
             K = np.copy(self.K)
 
             e, a = self.elevation, index*np.pi*2/self.num_images
