@@ -466,7 +466,7 @@ class RenderingNetwork(nn.Module):
 
             setattr(self, "lin" + str(l), lin)
 
-        self.seg_lin = nn.Linear(dims[l], 12)
+        self.seg_lin = nn.Linear(dims[l], 3)
         self.relu = nn.ReLU()
 
     def forward(self, points, normals, view_dirs, feature_vectors):
