@@ -92,7 +92,6 @@ class BackgroundRemoval:
         image = np.array(image)
         return image
 
-
 class BaseRenderer(nn.Module):
     def __init__(self, train_batch_num, test_batch_num):
         super().__init__()
@@ -313,7 +312,8 @@ class NeuSRenderer(BaseRenderer):
         device = rays_o.device
         has_seg = True
 
-        num_classes = 12 #material number
+        num_classes = 3 #material number
+        # num_classes = int(np.max(mask_seg)) + 1
 
         alpha, sampled_color, gradient_error, normal = torch.zeros(batch_size, n_samples, dtype=self.default_dtype, device=device), \
             torch.zeros(batch_size, n_samples, 3, dtype=self.default_dtype, device=device), \
@@ -363,29 +363,15 @@ class NeuSRenderer(BaseRenderer):
         rgb_pr = render_outputs['rgb']
         if has_seg:
             rgb_seg_gt = ray_batch['rgb']
-            # rgb_seg_pred = render_outputs['rgb']
-            rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, 3:]
+            rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, -1]
             seg_pr = render_outputs['seg']
-
-            # seg_gt = seg_gt.long()
-            # if seg_gt.dim() == 2 and seg_gt.size(1) == 1:
-                # seg_gt = seg_gt.view(-1)
-            # 将 seg_gt 转换为 one-hot 编码
-            # num_classes = 12
-            # labels = torch.clamp(torch.floor(seg_gt * 12), max=11).int().squeeze()
-            # one_hot = torch.nn.functional.one_hot(labels, num_classes=12)
-            # seg_gt_one_hot = one_hot
-            bins = torch.linspace(0, 1, steps=13, device='cuda:0')  # 生成 12 个区间边界
-            indices = torch.bucketize(seg_gt.squeeze(), bins) - 1  # 找到每个值所属的区间
-
-            # 创建一个全零张量，形状为 [4096, 12]
-            one_hot_values = torch.zeros((seg_gt.size(0), 12), device='cuda:0')
-
-            # 将原始值填充到对应的区间位置
-            one_hot_values[torch.arange(seg_gt.size(0)), indices] = seg_gt.squeeze()
-
-            seg_loss = F.cross_entropy(seg_pr, one_hot_values, reduction='none')
+            seg_gt = seg_gt.long()
+            mask_one_hot = F.one_hot(seg_gt, num_classes=3).float()
+            # breakpoint()
+            seg_loss = F.cross_entropy(seg_pr, mask_one_hot, reduction='none')
+            # breakpoint()
             seg_loss = torch.mean(seg_loss)
+            
         
         if self.rgb_loss == 'soft_l1':
             epsilon = 0.001
@@ -493,15 +479,14 @@ class RendererTrainer(pl.LightningModule):
         self.K, _, _, _, _ = read_pickle(f'meta_info/camera-16.pkl')
 
         self.images_info = {'images': [] ,'masks': [], 'Ks': [], 'poses':[]}
-        print(self.image_path, self.log_dir)
-        # img = imread(self.image_path)
         seg_maskdir = '/dtu/blackhole/11/180913/seg_material/merged_results'
+
         for index in range(self.num_images):
-            # rgb = np.copy(img[:,index*self.image_size:(index+1)*self.image_size,:])
             rgb = imread(f'{self.image_path}/{index}.png')
             # mask_seg = imread(os.path.join(seg_maskdir,'chair%i'%(index+1),'clean_masks/0','1_mask.png'))
             mask_seg = imread(os.path.join(seg_maskdir, 'chair%i' % (index + 1) + '.png'))
             mask_seg = cv2.resize(mask_seg, (256, 256), interpolation=cv2.INTER_NEAREST)
+
             # predict mask
             if self.use_mask:
                 imsave(f'{self.log_dir}/input-{index}.png', rgb)
@@ -512,9 +497,9 @@ class RendererTrainer(pl.LightningModule):
                 h, w, _ = rgb.shape
                 mask = np.zeros([h,w], np.float32)
 
-            rgb = rgb.astype(np.float32)/255
-            mask_seg = mask_seg.astype(np.float32)/255
-            breakpoint()
+            # rgb = rgb.astype(np.float32)
+            num_classes = int(np.max(mask_seg)) + 1
+
             rgb_seg = np.concatenate([rgb, mask_seg[...,None]], -1)
             K = np.copy(self.K)
 

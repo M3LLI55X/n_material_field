@@ -27,15 +27,16 @@ class ResumeCallBacks(Callback):
     def on_train_start(self, trainer, pl_module):
         pl_module.optimizers().param_groups = pl_module.optimizers()._optimizer.param_groups
 
-def extract_fields(bound_min, bound_max, resolution, query_func, batch_size=64, outside_val=1.0,color_func=None):
+def extract_fields(bound_min, bound_max, resolution, query_func, batch_size=64, outside_val=1.0, color_func=None):
     N = batch_size
     X = torch.linspace(bound_min[0], bound_max[0], resolution).split(N)
     Y = torch.linspace(bound_min[1], bound_max[1], resolution).split(N)
     Z = torch.linspace(bound_min[2], bound_max[2], resolution).split(N)
     
     u_all = []
-    seg_nums = 6
-    seg_index = 2
+    seg_nums = 3
+    vertex_seg_results_all = []
+    
     for seg_index in range(seg_nums):
         u = np.zeros([resolution, resolution, resolution], dtype=np.float32)
         with torch.no_grad():
@@ -47,73 +48,103 @@ def extract_fields(bound_min, bound_max, resolution, query_func, batch_size=64, 
                         val = query_func(pts).detach()
                         vertex_colors, vertex_seg = color_func(pts.cpu().numpy())
                         vertex_seg_results = np.argmax(vertex_seg, axis=-1)
+                        vertex_seg_results_all.append(vertex_seg_results)
                         mask = vertex_seg_results == seg_index
                         val[mask] = 0
-                        outside_mask = torch.norm(pts,dim=-1)>=1.0
-                        val[outside_mask]=outside_val
+                        outside_mask = torch.norm(pts, dim=-1) >= 1.0
+                        val[outside_mask] = outside_val
                         val = val.reshape(len(xs), len(ys), len(zs)).cpu().numpy()
                         u[xi * N: xi * N + len(xs), yi * N: yi * N + len(ys), zi * N: zi * N + len(zs)] = val
         u_all.append(u)
+    
+    # Flatten the list of vertex_seg_results and get unique values
+    unique_vertex_seg_results = np.unique(np.concatenate(vertex_seg_results_all))
+    print(f"Unique vertex_seg_results: {unique_vertex_seg_results}")
+    breakpoint()
     return u_all
 
+# def extract_fields(bound_min, bound_max, resolution, query_func, batch_size=64, outside_val=1.0, color_func=None):
+#     N = batch_size
+#     X = torch.linspace(bound_min[0], bound_max[0], resolution)
+#     Y = torch.linspace(bound_min[1], bound_max[1], resolution)
+#     Z = torch.linspace(bound_min[2], bound_max[2], resolution)
+
+#     # Create a grid of points
+#     xx, yy, zz = torch.meshgrid(X, Y, Z, indexing='ij')
+#     pts = torch.stack([xx, yy, zz], dim=-1).reshape(-1, 3).cuda()
+
+#     u_all = {}
+#     with torch.no_grad():
+#         num_pts = pts.shape[0]
+#         all_vals = []
+#         all_vertex_seg = []
+
+#         # Process points in batches
+#         for i in range(0, num_pts, N):
+#             pts_batch = pts[i:i+N]
+#             val = query_func(pts_batch).detach().cpu().numpy()
+#             vertex_colors, vertex_seg = color_func(pts_batch.cpu().numpy())
+#             vertex_seg_results = np.argmax(vertex_seg, axis=-1)
+#             all_vals.append(val)
+#             all_vertex_seg.append(vertex_seg_results)
+
+#         # Concatenate all results
+#         all_vals = np.concatenate(all_vals)
+#         all_vertex_seg = np.concatenate(all_vertex_seg)
+
+#         # Find unique segmentation classes
+#         unique_vertex_seg_results = np.unique(all_vertex_seg)
+#         print(f"Unique vertex_seg_results: {unique_vertex_seg_results}")
+
+#         # Create fields for each segmentation class
+#         for seg_index in unique_vertex_seg_results:
+#             u = np.full((resolution**3), outside_val, dtype=np.float32)
+#             mask = all_vertex_seg == seg_index
+#             u[mask] = all_vals[mask]
+#             u = u.reshape(resolution, resolution, resolution)
+#             u_all[seg_index] = u
+
+#     return u_all
+# def extract_geometry(bound_min, bound_max, resolution, threshold, query_func, color_func, outside_val=1.0):
+#     u_all = extract_fields(bound_min, bound_max, resolution, query_func, outside_val=outside_val,color_func=color_func)
+#     geometries = []
+#     n = len(u_all)
+    
+#     for u in u_all:
+#         vertices, triangles = mcubes.marching_cubes(u_all[0], threshold)
+#         b_max_np = bound_max.detach().cpu().numpy()
+#         b_min_np = bound_min.detach().cpu().numpy()
+
+#         vertices = vertices / (resolution - 1.0) * (b_max_np - b_min_np)[None, :] + b_min_np[None, :]
+#         vertex_colors, vertex_seg = color_func(vertices)
+
+#     return vertices, triangles, vertex_colors
 
 def extract_geometry(bound_min, bound_max, resolution, threshold, query_func, color_func, outside_val=1.0):
-    u_all = extract_fields(bound_min, bound_max, resolution, query_func, outside_val=outside_val,color_func=color_func)
-    # geometries = []
-    # n = len(u_all)
+    u_all = extract_fields(bound_min, bound_max, resolution, query_func, outside_val=outside_val, color_func=color_func)
+    geometries = []
     
-    # for u in u_all:
+    for u in u_all:
+        vertices, triangles = mcubes.marching_cubes(u, threshold)
+        b_max_np = bound_max.detach().cpu().numpy()
+        b_min_np = bound_min.detach().cpu().numpy()
 
-    vertices, triangles = mcubes.marching_cubes(u_all[0], threshold)
-    b_max_np = bound_max.detach().cpu().numpy()
-    b_min_np = bound_min.detach().cpu().numpy()
-
-    vertices = vertices / (resolution - 1.0) * (b_max_np - b_min_np)[None, :] + b_min_np[None, :]
-    vertex_colors, vertex_seg = color_func(vertices)
-    # vertex_seg_results = np.argmax(vertex_seg, axis=-1)  # [n,]
-    # n_class = np.unique(vertex_seg_results)
-    # mask = vertex_seg_results == n_class
-    # vertices_cp = vertices.copy()
-    # vertex_colors_cp = vertex_colors.copy()
-    # vertices_cp[~mask] = 0
-    # vertex_colors_cp[~mask] = 0
-    # geometries.append((vertices, triangles, vertex_colors))
-    return vertices, triangles, vertex_colors
+        vertices = vertices / (resolution - 1.0) * (b_max_np - b_min_np)[None, :] + b_min_np[None, :]
+        vertex_colors, vertex_seg = color_func(vertices)
+        
+        geometries.append((vertices, triangles, vertex_colors))
+    return geometries
 
 def extract_mesh(model, output, resolution=512):
     if not isinstance(model.renderer, NeuSRenderer): return
     bbox_min = -torch.ones(3) * DEFAULT_SIDE_LENGTH
     bbox_max = torch.ones(3) * DEFAULT_SIDE_LENGTH
     with torch.no_grad():
-        vertices, triangles, vertex_colors = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
+        geometries = extract_geometry(bbox_min, bbox_max, resolution, 0, lambda x: model.renderer.sdf_network.sdf(x), lambda x: model.renderer.get_vertex_colors(x))
 
-    # for i, (vertices_cp, triangles_cp, vertex_colors_cp, n_class) in enumerate(geometries):
-    mesh = trimesh.Trimesh(vertices, triangles, vertex_colors)
-    # mesh.export(f'{output}/class_{n_class}_mesh_{i}.ply')
-    mesh.export(f'{output}/class_mesh.ply')
-
-
-# def extract_geometry(bound_min, bound_max, resolution, threshold, query_func, color_func, outside_val=1.0):
-#     u = extract_fields(bound_min, bound_max, resolution, query_func, outside_val=outside_val)
-#     vertices, triangles = mcubes.marching_cubes(u, threshold)
-#     b_max_np = bound_max.detach().cpu().numpy()
-#     b_min_np = bound_min.detach().cpu().numpy()
-
-#     vertices = vertices / (resolution - 1.0) * (b_max_np - b_min_np)[None, :] + b_min_np[None, :]
-#     vertex_colors,vertex_seg = color_func(vertices)
-#     vertex_seg_results = np.argmax(vertex_seg, axis=-1) # [n,]
-
-#     # 将顶点坐标从体数据的网格索引空间转换到实际的三维空间坐标。
-#     geometries = []
-#     for n_class in np.unique(vertex_seg_results):
-#         mask = vertex_seg_results == n_class
-#         vertices_cp = vertices.copy()
-#         vertex_colors_cp = vertex_colors.copy()
-#         vertices_cp[~mask] = 0
-#         vertex_colors_cp[~mask] = 0
-#         geometries.append((vertices_cp, triangles, vertex_colors_cp, n_class))
-#     return geometries
-
+    for i, (vertices, triangles, vertex_colors) in enumerate(geometries):
+        mesh = trimesh.Trimesh(vertices, triangles, vertex_colors=vertex_colors)
+        mesh.export(f'{output}/mesh_part_{i}.ply')
 
 # def extract_mesh(model, output, resolution=512):
 #     if not isinstance(model.renderer, NeuSRenderer): return
@@ -142,8 +173,7 @@ def main():
     parser.add_argument('-r', '--resume', action='store_true', default=False, dest='resume')
     parser.add_argument('--fp16', action='store_true', default=False, dest='fp16')
     opt = parser.parse_args()
-    # seed_everything(opt.seed)
-
+    
     # configs
     cfg = OmegaConf.load(opt.base)
     name = opt.name

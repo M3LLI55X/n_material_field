@@ -111,13 +111,6 @@ class SDFNetwork(nn.Module):
         self.activation = nn.Softplus(beta=100)
 
     def forward(self, inputs):
-        # mask = inputs
-
-        # ori_img = inputs.clone()
-        # b,c,h,w = ori_img.shape
-        # tmp = torch.zeros(b,1,h,w).to(ori_img.device)
-        # tmp[mask] = 1
-        # inputs = torch.cat([ori_img,tmp],1) # [b,3+1,h,w]
 
         inputs = inputs * self.scale
         if self.embed_fn_fine is not None:
@@ -466,7 +459,7 @@ class RenderingNetwork(nn.Module):
 
             setattr(self, "lin" + str(l), lin)
 
-        self.seg_lin = nn.Linear(dims[l], 12)
+        self.seg_lin = nn.Linear(dims[l], 3)
         self.relu = nn.ReLU()
 
     def forward(self, points, normals, view_dirs, feature_vectors):
@@ -485,19 +478,18 @@ class RenderingNetwork(nn.Module):
             lin = getattr(self, "lin" + str(l))
 
             x = lin(x)
-
             if l < self.num_layers - 2:
                 x = self.relu(x)
 
         color_x = getattr(self, "lin" + str(self.num_layers - 2))(x)
         seg_x = self.seg_lin(x)
+        # breakpoint()
         seg_x = F.sigmoid(seg_x)
         
 
         if self.squeeze_out:
             x = self.rgb_act(x)
         return {'rgb': color_x, 'seg': seg_x}
-        # 改过
 
 class SingleVarianceNetwork(nn.Module):
     def __init__(self, init_val, activation='exp'):
