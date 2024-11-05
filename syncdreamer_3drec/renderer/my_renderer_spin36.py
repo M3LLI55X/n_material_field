@@ -326,12 +326,14 @@ class NeuSRenderer(BaseRenderer):
         if torch.sum(inner_mask) > 0:
             cos_anneal_ratio = self.get_anneal_val(step) if is_train else 1.0
             alpha[inner_mask], gradients, feature_vector, inv_s, sdf = self.compute_sdf_alpha(points[inner_mask], dists[inner_mask], dirs[inner_mask], cos_anneal_ratio, step)
+            # if has_seg:
+            out_dict = self.color_network(points[inner_mask], gradients, -dirs[inner_mask], feature_vector)
+            sampled_color[inner_mask] = out_dict['rgb']
+            sample_seg[inner_mask] = out_dict['seg']
+            weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], dtype=self.default_dtype, device=device), 1. - alpha + 1e-7], -1), -1)[..., :-1]
             if has_seg:
-                out_dict = self.color_network(points[inner_mask], gradients, -dirs[inner_mask], feature_vector)
-                sampled_color[inner_mask] = out_dict['rgb']
-                sample_seg[inner_mask] = out_dict['seg']
-                weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], dtype=self.default_dtype, device=device), 1. - alpha + 1e-7], -1), -1)[..., :-1]
-                seg = (sample_seg * weights[..., None]).sum(dim=1)
+                # seg = (sample_seg * weights[..., None]).sum(dim=1)
+                seg = sample_seg.sum(dim=1)
                 # seg = out_dict['seg']
             else:
                 sampled_color[inner_mask] = self.color_network(points[inner_mask], gradients, -dirs[inner_mask], feature_vector)
@@ -341,9 +343,16 @@ class NeuSRenderer(BaseRenderer):
 
         weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], dtype=self.default_dtype, device=device), 1. - alpha + 1e-7], -1), -1)[..., :-1]  # rn,sn
         mask = torch.sum(weights,dim=1).unsqueeze(-1) # rn,1
+        # breakpoint()
+        if has_seg:
+            mask = torch.where(mask < 0.001, torch.tensor(0.0, device=mask.device), mask)
+            # breakpoint()
+            seg = mask * seg
+            # tmp = mask * seg[...,1:]
+            # seg = torch.concat([tmp, seg[...,:1]], -1)
         color = (sampled_color * weights[..., None]).sum(dim=1) + (1 - mask) # add white background
         normal = (normal * weights[..., None]).sum(dim=1)
-
+        # breakpoint()
         outputs = {
             'rgb': color,  # rn,3
             'gradient_error': gradient_error,  # rn,sn
@@ -363,13 +372,15 @@ class NeuSRenderer(BaseRenderer):
         rgb_pr = render_outputs['rgb']
         if has_seg:
             rgb_seg_gt = ray_batch['rgb']
-            # rgb_seg_pred = render_outputs['rgb']
             rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, -1:]
             seg_pr = render_outputs['seg']
-            seg_gt = seg_gt.long()
-            mask_one_hot = F.one_hot(seg_gt, num_classes=3).float()
+            # render_outputs['mask'] = torch.where(render_outputs['mask'] < 0.1, torch.tensor(0.0, device=render_outputs['mask'].device), render_outputs['mask'])
+            seg_pr = seg_pr * render_outputs['mask']
             # breakpoint()
+            seg_gt = seg_gt.squeeze().long()
+            mask_one_hot = F.one_hot(seg_gt, num_classes=3).float()
             seg_loss = F.cross_entropy(seg_pr, mask_one_hot, reduction='none')
+            # breakpoint()
             seg_loss = torch.mean(seg_loss)
         
         if self.rgb_loss == 'soft_l1':
@@ -382,10 +393,11 @@ class NeuSRenderer(BaseRenderer):
         rgb_loss = torch.mean(rgb_loss)
 
         eikonal_loss = torch.sum(render_outputs['gradient_error'] * render_outputs['inner_mask']) / torch.sum(render_outputs['inner_mask'] + 1e-5)
-        loss = rgb_loss * self.lambda_rgb_loss + eikonal_loss * self.lambda_eikonal_loss
+        loss = rgb_loss * self.lambda_rgb_loss + eikonal_loss * self.lambda_eikonal_loss + seg_loss * 10
         loss_batch = {
             'eikonal': eikonal_loss,
             'rendering': rgb_loss,
+            'seg': seg_loss,
             # 'mask': mask_loss,
         }
         if self.lambda_mask_loss>0 and self.use_mask:
