@@ -437,66 +437,225 @@ class RenderingFFNetwork(nn.Module):
         colors = F.sigmoid(colors)
         return colors
 
-# This implementation is borrowed from IDR: https://github.com/lioryariv/idr
+
+# class RenderingNetwork(nn.Module):
+#     def __init__(self, d_feature, d_in, d_out, d_hidden,
+#                  n_layers, weight_norm=True, multires_view=0, squeeze_out=True, use_view_dir=True):
+#         super().__init__()
+
+#         self.squeeze_out = squeeze_out
+#         self.rgb_act=F.sigmoid
+#         self.use_view_dir=use_view_dir
+
+#         dims = [d_in + d_feature] + [d_hidden for _ in range(n_layers)] + [d_out]
+
+#         self.embedview_fn = None
+#         if multires_view > 0:
+#             embedview_fn, input_ch = get_embedder(multires_view)
+#             self.embedview_fn = embedview_fn
+#             dims[0] += (input_ch - 3)
+
+#         self.num_layers = len(dims)
+
+#         for l in range(0, self.num_layers - 1):
+#             out_dim = dims[l + 1]
+#             lin = nn.Linear(dims[l], out_dim)
+
+#             if weight_norm:
+#                 lin = nn.utils.weight_norm(lin)
+
+#             setattr(self, "lin" + str(l), lin)
+
+#         self.seg_lin = nn.Linear(dims[l], 3)
+#         self.relu = nn.ReLU()
+
+#     def forward(self, points, normals, view_dirs, feature_vectors):
+#         if self.use_view_dir:
+#             view_dirs = F.normalize(view_dirs, dim=-1)
+#             normals = F.normalize(normals, dim=-1)
+#             reflective = torch.sum(view_dirs*normals, -1, keepdim=True) * normals * 2 - view_dirs
+#             if self.embedview_fn is not None: reflective = self.embedview_fn(reflective)
+#             rendering_input = torch.cat([points, reflective, normals, feature_vectors], dim=-1)
+#         else:
+#             rendering_input = torch.cat([points, normals, feature_vectors], dim=-1)
+
+#         x = rendering_input
+
+#         for l in range(0, self.num_layers - 2):
+#             lin = getattr(self, "lin" + str(l))
+#             x = lin(x)
+#             if l < self.num_layers - 2:
+#                 x = self.relu(x)
+
+#         color_x = getattr(self, "lin" + str(self.num_layers - 2))(x)
+
+#         seg_x = self.seg_lin(x)
+#         seg_x = F.sigmoid(seg_x)
+        
+
+#         if self.squeeze_out:
+#             x = self.rgb_act(x)
+#         return {'rgb': color_x, 'seg': seg_x}
+
+
 class RenderingNetwork(nn.Module):
     def __init__(self, d_feature, d_in, d_out, d_hidden,
                  n_layers, weight_norm=True, multires_view=0, squeeze_out=True, use_view_dir=True):
         super().__init__()
 
         self.squeeze_out = squeeze_out
-        self.rgb_act=F.sigmoid
-        self.use_view_dir=use_view_dir
+        self.rgb_act = nn.Sigmoid()
+        self.use_view_dir = use_view_dir
 
-        dims = [d_in + d_feature] + [d_hidden for _ in range(n_layers)] + [d_out]
+        # 定义输入维度
+        input_dim = d_in + d_feature
 
+        # 如果使用视角嵌入，则调整输入维度
         self.embedview_fn = None
         if multires_view > 0:
             embedview_fn, input_ch = get_embedder(multires_view)
             self.embedview_fn = embedview_fn
-            dims[0] += (input_ch - 3)
+            input_dim += (input_ch - 3)
 
-        self.num_layers = len(dims)
-
-        for l in range(0, self.num_layers - 1):
-            out_dim = dims[l + 1]
-            lin = nn.Linear(dims[l], out_dim)
-
+        # 定义共享的网络层
+        dims = [input_dim] + [d_hidden for _ in range(n_layers - 1)]
+        self.shared_layers = nn.ModuleList()
+        for l in range(len(dims) - 1):
+            lin = nn.Linear(dims[l], dims[l + 1])
             if weight_norm:
                 lin = nn.utils.weight_norm(lin)
+            self.shared_layers.append(lin)
 
-            setattr(self, "lin" + str(l), lin)
-
-        self.seg_lin = nn.Linear(dims[l], 3)
         self.relu = nn.ReLU()
+
+        # 定义RGB的输出层
+        self.rgb_layer = nn.Linear(dims[-1], d_out)
+        if weight_norm:
+            self.rgb_layer = nn.utils.weight_norm(self.rgb_layer)
+
+        # 定义Segmentation的分支网络
+        self.seg_layers = nn.Sequential(
+            nn.Linear(dims[-1], d_hidden),
+            nn.ReLU(),
+            nn.Linear(d_hidden, d_hidden),
+            nn.ReLU(),
+            nn.Linear(d_hidden, 3)  # 输出3个类别的logits
+        )
+        if weight_norm:
+            self.seg_layers[0] = nn.utils.weight_norm(self.seg_layers[0])
+            self.seg_layers[2] = nn.utils.weight_norm(self.seg_layers[2])
 
     def forward(self, points, normals, view_dirs, feature_vectors):
         if self.use_view_dir:
             view_dirs = F.normalize(view_dirs, dim=-1)
             normals = F.normalize(normals, dim=-1)
-            reflective = torch.sum(view_dirs*normals, -1, keepdim=True) * normals * 2 - view_dirs
-            if self.embedview_fn is not None: reflective = self.embedview_fn(reflective)
+            reflective = torch.sum(view_dirs * normals, -1, keepdim=True) * normals * 2 - view_dirs
+            if self.embedview_fn is not None:
+                reflective = self.embedview_fn(reflective)
             rendering_input = torch.cat([points, reflective, normals, feature_vectors], dim=-1)
         else:
             rendering_input = torch.cat([points, normals, feature_vectors], dim=-1)
 
         x = rendering_input
 
-        for l in range(0, self.num_layers - 2):
-            lin = getattr(self, "lin" + str(l))
+        # 通过共享的网络层
+        for lin in self.shared_layers:
+            x = self.relu(lin(x))
 
-            x = lin(x)
-
-            if l < self.num_layers - 2:
-                x = self.relu(x)
-
-        color_x = getattr(self, "lin" + str(self.num_layers - 2))(x)
-        seg_x = self.seg_lin(x)
-        seg_x = F.sigmoid(seg_x)
-        
-
+        # RGB输出
+        color_x = self.rgb_layer(x)
         if self.squeeze_out:
-            x = self.rgb_act(x)
+            color_x = self.rgb_act(color_x)
+
+        # Segmentation输出
+        seg_x = self.seg_layers(x)
+        seg_x = F.sigmoid(seg_x)
+
         return {'rgb': color_x, 'seg': seg_x}
+
+
+# class RenderingNetwork(nn.Module):
+#     def __init__(self, d_feature, d_in, d_out, d_hidden,
+#                  n_layers, weight_norm=True, multires_view=0, squeeze_out=True, use_view_dir=True):
+#         super().__init__()
+
+#         self.squeeze_out = squeeze_out
+#         self.rgb_act = F.sigmoid
+#         self.use_view_dir = use_view_dir
+
+#         dims = [d_in + d_feature] + [d_hidden for _ in range(n_layers)] + [d_out]
+
+#         self.embedview_fn = None
+#         if multires_view > 0:
+#             embedview_fn, input_ch = get_embedder(multires_view)
+#             self.embedview_fn = embedview_fn
+#             dims[0] += (input_ch - 3)
+
+#         self.num_layers = len(dims)
+
+#         # RGB network layers
+#         for l in range(0, self.num_layers - 1):
+#             out_dim = dims[l + 1]
+#             lin = nn.Linear(dims[l], out_dim)
+
+#             if weight_norm:
+#                 lin = nn.utils.weight_norm(lin)
+
+#             setattr(self, "lin" + str(l), lin)
+
+#         # Segmentation network - only one hidden layer after shared first layer
+#         self.seg_layers = nn.ModuleList([
+#             nn.Linear(d_hidden, d_hidden) for _ in range(3)  
+#         ])
+#         self.seg_hidden = nn.Linear(d_hidden, d_hidden)
+#         if weight_norm:
+#             self.seg_hidden = nn.utils.weight_norm(self.seg_hidden)
+        
+#         self.seg_out = nn.Linear(d_hidden, 3)
+#         if weight_norm:
+#             self.seg_out = nn.utils.weight_norm(self.seg_out)
+            
+#         self.relu = nn.ReLU()
+
+#     def forward(self, points, normals, view_dirs, feature_vectors):
+#         if self.use_view_dir:
+#             view_dirs = F.normalize(view_dirs, dim=-1)
+#             normals = F.normalize(normals, dim=-1)
+#             reflective = torch.sum(view_dirs*normals, -1, keepdim=True) * normals * 2 - view_dirs
+#             if self.embedview_fn is not None:
+#                 reflective = self.embedview_fn(reflective)
+#             rendering_input = torch.cat([points, reflective, normals, feature_vectors], dim=-1)
+#         else:
+#             rendering_input = torch.cat([points, normals, feature_vectors], dim=-1)
+
+#         x = rendering_input
+
+#         # Shared first layer
+#         first_layer = getattr(self, "lin0")
+#         shared_features = self.relu(first_layer(x))
+
+#         # RGB branch
+#         rgb_features = shared_features
+#         for l in range(1, self.num_layers - 2):
+#             lin = getattr(self, "lin" + str(l))
+#             rgb_features = lin(rgb_features)
+#             if l < self.num_layers - 2:
+#                 rgb_features = self.relu(rgb_features)
+
+#         color_x = getattr(self, "lin" + str(self.num_layers - 2))(rgb_features)
+
+#         # Segmentation branch - one hidden layer
+#         seg_x = self.relu(self.seg_hidden(shared_features))
+#         for l in range(3):
+#             seg_x = self.relu(self.seg_layers[l](seg_x))
+#         seg_x = self.seg_out(seg_x)
+#         seg_x = F.sigmoid(seg_x)
+        
+#         if self.squeeze_out:
+#             color_x = self.rgb_act(color_x)
+            
+#         return {'rgb': color_x, 'seg': seg_x}
+
 
 
 class SingleVarianceNetwork(nn.Module):

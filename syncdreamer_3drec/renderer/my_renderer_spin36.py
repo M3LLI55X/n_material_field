@@ -321,38 +321,29 @@ class NeuSRenderer(BaseRenderer):
             torch.zeros([batch_size, n_samples, 3], dtype=self.default_dtype, device=device)
         sample_seg= torch.zeros([batch_size, n_samples, num_classes], dtype=self.default_dtype, device=device)
         weights = torch.zeros(batch_size, n_samples, dtype=self.default_dtype, device=device)
-        # weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], dtype=self.default_dtype, device=device), 1. - alpha + 1e-7], -1), -1)[..., :-1]
-
+        
         if torch.sum(inner_mask) > 0:
             cos_anneal_ratio = self.get_anneal_val(step) if is_train else 1.0
             alpha[inner_mask], gradients, feature_vector, inv_s, sdf = self.compute_sdf_alpha(points[inner_mask], dists[inner_mask], dirs[inner_mask], cos_anneal_ratio, step)
-            # if has_seg:
+
             out_dict = self.color_network(points[inner_mask], gradients, -dirs[inner_mask], feature_vector)
             sampled_color[inner_mask] = out_dict['rgb']
-            sample_seg[inner_mask] = out_dict['seg']
+            sample_seg[inner_mask] = out_dict['seg'] #(bs, n_samples, 3)
             weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], dtype=self.default_dtype, device=device), 1. - alpha + 1e-7], -1), -1)[..., :-1]
             if has_seg:
-                # seg = (sample_seg * weights[..., None]).sum(dim=1)
-                seg = sample_seg.sum(dim=1)
-                # seg = out_dict['seg']
-            else:
-                sampled_color[inner_mask] = self.color_network(points[inner_mask], gradients, -dirs[inner_mask], feature_vector)
+                seg = (sample_seg * weights[..., None]).sum(dim=1)
+                # seg = sample_seg.sum(dim=1) 
             # Eikonal loss
             gradient_error[inner_mask] = (torch.linalg.norm(gradients, ord=2, dim=-1) - 1.0) ** 2 # rn,sn
             normal[inner_mask] = F.normalize(gradients, dim=-1)
 
-        weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1], dtype=self.default_dtype, device=device), 1. - alpha + 1e-7], -1), -1)[..., :-1]  # rn,sn
         mask = torch.sum(weights,dim=1).unsqueeze(-1) # rn,1
-        # breakpoint()
-        if has_seg:
-            mask = torch.where(mask < 0.001, torch.tensor(0.0, device=mask.device), mask)
-            # breakpoint()
-            seg = mask * seg
+        # if has_seg:
             # tmp = mask * seg[...,1:]
-            # seg = torch.concat([tmp, seg[...,:1]], -1)
+            # seg = torch.concat([seg[...,:1],tmp], -1)
+            # seg = mask * seg
         color = (sampled_color * weights[..., None]).sum(dim=1) + (1 - mask) # add white background
         normal = (normal * weights[..., None]).sum(dim=1)
-        # breakpoint()
         outputs = {
             'rgb': color,  # rn,3
             'gradient_error': gradient_error,  # rn,sn
@@ -374,14 +365,11 @@ class NeuSRenderer(BaseRenderer):
             rgb_seg_gt = ray_batch['rgb']
             rgb_gt, seg_gt = rgb_seg_gt[:, :3], rgb_seg_gt[:, -1:]
             seg_pr = render_outputs['seg']
-            # render_outputs['mask'] = torch.where(render_outputs['mask'] < 0.1, torch.tensor(0.0, device=render_outputs['mask'].device), render_outputs['mask'])
-            seg_pr = seg_pr * render_outputs['mask']
-            # breakpoint()
             seg_gt = seg_gt.squeeze().long()
+            
             mask_one_hot = F.one_hot(seg_gt, num_classes=3).float()
-            seg_loss = F.cross_entropy(seg_pr, mask_one_hot, reduction='none')
-            # breakpoint()
-            seg_loss = torch.mean(seg_loss)
+            seg_loss = F.cross_entropy(seg_pr, mask_one_hot, reduction='mean')
+            # , weight = torch.tensor([1.0,1.0,2.0]).cuda()
         
         if self.rgb_loss == 'soft_l1':
             epsilon = 0.001
@@ -393,12 +381,12 @@ class NeuSRenderer(BaseRenderer):
         rgb_loss = torch.mean(rgb_loss)
 
         eikonal_loss = torch.sum(render_outputs['gradient_error'] * render_outputs['inner_mask']) / torch.sum(render_outputs['inner_mask'] + 1e-5)
-        loss = rgb_loss * self.lambda_rgb_loss + eikonal_loss * self.lambda_eikonal_loss + seg_loss * 10
+        loss = rgb_loss * self.lambda_rgb_loss + eikonal_loss * self.lambda_eikonal_loss + seg_loss * 2.0
         loss_batch = {
+            'rgb': rgb_loss,
             'eikonal': eikonal_loss,
             'rendering': rgb_loss,
             'seg': seg_loss,
-            # 'mask': mask_loss,
         }
         if self.lambda_mask_loss>0 and self.use_mask:
             mask_loss = F.mse_loss(render_outputs['mask'], ray_batch['mask'], reduction='none').mean()
@@ -412,7 +400,6 @@ class RendererTrainer(pl.LightningModule):
                  use_cube_feats=False, cube_ckpt=None, cube_cfg=None, cube_bound=0.5,
                  train_batch_num=4096, test_batch_num=8192, use_warm_up=True, use_mask=True,
                  lambda_rgb_loss=1.0, lambda_mask_loss=0.0, renderer='neus',
-                 # used in neus
                  lambda_eikonal_loss=0.1,
                  coarse_sn=64, fine_sn=64):
         super().__init__()
@@ -464,7 +451,6 @@ class RendererTrainer(pl.LightningModule):
         rays_d = F.normalize(rays_d, dim=-1)
         rays_o = -R.permute(0,2,1) @ t # imn,3,3 @ imn,3,1
         rays_o = rays_o.permute(0, 2, 1).repeat(1, h*w, 1) # imn,h*w,3
-        # breakpoint()
         ray_batch = {
             'rgb': images_info['images'].reshape(image_num*h*w,color_ch),
             'mask': images_info['masks'].reshape(image_num*h*w,1),
@@ -493,11 +479,10 @@ class RendererTrainer(pl.LightningModule):
         print(self.image_path, self.log_dir)
         seg_maskdir = '/dtu/blackhole/11/180913/seg_material/merged_results'
         for index in range(self.num_images):
-            # rgb = np.copy(img[:,index*self.image_size:(index+1)*self.image_size,:])
             rgb = imread(f'{self.image_path}/{index}.png')
             # mask_seg = imread(os.path.join(seg_maskdir,'chair%i'%(index+1),'clean_masks/0','1_mask.png'))
-            mask_seg = imread(os.path.join(seg_maskdir, 'chair%i' % (index + 1) + '.png'))
-            mask_seg = cv2.resize(mask_seg, (256, 256), interpolation=cv2.INTER_NEAREST)
+            seg = imread(os.path.join(seg_maskdir, 'chair%i' % (index + 1) + '.png'))
+            seg = cv2.resize(seg, (256, 256), interpolation=cv2.INTER_NEAREST)
             # predict mask
             if self.use_mask:
                 imsave(f'{self.log_dir}/input-{index}.png', rgb)
@@ -507,9 +492,8 @@ class RendererTrainer(pl.LightningModule):
             else:
                 h, w, _ = rgb.shape
                 mask = np.zeros([h,w], np.float32)
-
             rgb = rgb.astype(np.float32)/255
-            rgb_seg = np.concatenate([rgb, mask_seg[...,None]], -1)
+            rgb_seg = np.concatenate([rgb, seg[...,None]], -1)
             K = np.copy(self.K)
 
             e, a = self.elevation, index*np.pi*2/self.num_images
@@ -527,7 +511,7 @@ class RendererTrainer(pl.LightningModule):
             self.images_info['masks'].append(torch.from_numpy(mask.astype(np.float32))) # h,w
             self.images_info['Ks'].append(torch.from_numpy(K.astype(np.float32)))
             self.images_info['poses'].append(torch.from_numpy(pose.astype(np.float32)))
-
+            
         # 数据堆叠
         for k, v in self.images_info.items(): self.images_info[k] = torch.stack(v, 0) # stack all values
 
@@ -612,8 +596,17 @@ class RendererTrainer(pl.LightningModule):
     #  配置优化器
     def configure_optimizers(self):
         lr = self.learning_rate
-        opt = torch.optim.AdamW([{"params": self.renderer.parameters(), "lr": lr},], lr=lr)
+        # opt = torch.optim.AdamW([{"params": self.renderer.parameters(), "lr": lr},], lr=lr)
+        
+        base_lr = lr  # 基础学习率
+        seg_lr = lr * 2.0
 
+        # 修改优化器定义
+        opt = torch.optim.AdamW([
+            {"params": [p for n, p in self.renderer.named_parameters() if 'seg' not in n], "lr": base_lr},
+            {"params": [p for n, p in self.renderer.named_parameters() if 'seg' in n], "lr": seg_lr}
+        ])
+        
         def schedule_fn(step):
             total_step = self.total_steps
             warm_up_step = self.warm_up_steps
