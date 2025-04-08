@@ -1,3 +1,4 @@
+use NeRF to do material-based segmentation 
 the environment is similar to [ViewFusion](https://github.com/Wi-sc/ViewFusion/tree/main)
 
 ###  Novel View Synthesis
