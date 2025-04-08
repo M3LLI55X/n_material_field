@@ -1,4 +1,4 @@
-# Modify from [ViewFusion](https://github.com/Wi-sc/ViewFusion/tree/main)
+the environment is similar to [ViewFusion](https://github.com/Wi-sc/ViewFusion/tree/main)
 
 ###  Novel View Synthesis
 same environment with [Zero-1-to-3](https://github.com/cvlab-columbia/zero123).
@@ -13,7 +13,7 @@ git clone https://github.com/openai/CLIP.git
 pip install -e CLIP/
 ```
 
-Download checkpoint under `zero123` through one of the following sources:
+Download the checkpoint under `zero123` through one of the following sources:
 
 ```
 https://huggingface.co/cvlab/zero123-weights/tree/main
